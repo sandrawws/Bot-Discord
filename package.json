@@ -1,0 +1,24 @@
+{
+  "name": "discord-puntos-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for points and leveling system",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "leveling",
+    "points"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^22.13.11",
+    "discord.js": "^14.22.1",
+    "dotenv": "^17.2.2"
+  }
+}

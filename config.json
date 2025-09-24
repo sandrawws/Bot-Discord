@@ -1,0 +1,13 @@
+{
+  "levelRoles": {},
+  "ajustes": {
+    "puntosporMensaje": 1,
+    "puntosporVoz": 2,
+    "multiplicadorExp": 1,
+    "prefijo": "!",
+    "canalAnuncios": null,
+    "rolAdmin": null,
+    "mensajeIP": " 🎮   RELOAD: PVE / PVP / EVENTOS / MISIONES / IA \n 🌐 IP del Servidor: 5.226.141.94\n📍 Puerto: 2491\n💰  Sistema de puntos en Discord\n🎟️  Sorteos en Discord con el sistema de puntos propio"
+  },
+  "comandosPersonalizados": {}
+}

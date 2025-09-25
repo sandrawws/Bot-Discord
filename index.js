@@ -1,7 +1,77 @@
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
 import fs from "fs";
+import http from "http";
 
-const client = new Client({
+// === SERVIDOR HTTP PARA RENDER ===
+const PORT = process.env.PORT || 3000;
+
+// Declarar variables ANTES del servidor para poder usarlas
+let data = { puntos: {}, niveles: {} };
+let client; // Declaramos pero no creamos aún
+
+const server = http.createServer((req, res) => {
+  // Página básica para mostrar estado del bot
+  if (req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Bot Discord - Estado</title>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial; margin: 40px; background: #2c2f33; color: white; }
+          .status { padding: 20px; background: #23272a; border-radius: 8px; }
+          .online { color: #43b581; }
+          .offline { color: #f04747; }
+        </style>
+      </head>
+      <body>
+        <div class="status">
+          <h1>🤖 Bot de Puntos y Sorteos</h1>
+          <h2>Estado: <span class="${client?.user ? 'online' : 'offline'}">${client?.user ? '🟢 ONLINE' : '🔴 OFFLINE'}</span></h2>
+          <p><strong>Bot:</strong> ${client?.user?.tag || 'Conectando...'}</p>
+          <p><strong>Servidores:</strong> ${client?.guilds?.cache.size || 0}</p>
+          <p><strong>Usuarios totales:</strong> ${Object.keys(data.puntos).length}</p>
+          <p><strong>Último reinicio:</strong> ${new Date().toLocaleString()}</p>
+          <hr>
+          <h3>📋 Comandos principales:</h3>
+          <ul>
+            <li><code>!help</code> - Ver todos los comandos</li>
+            <li><code>!puntos</code> - Ver tus puntos</li>
+            <li><code>!top</code> - Ranking</li>
+            <li><code>!admin dar @usuario 100</code> - Dar puntos (admin)</li>
+          </ul>
+        </div>
+      </body>
+      </html>
+    `);
+  } 
+  else if (req.url === '/status') {
+    // API endpoint para verificar estado
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: client?.user ? 'online' : 'offline',
+      bot: client?.user?.tag || null,
+      guilds: client?.guilds?.cache.size || 0,
+      users: Object.keys(data.puntos).length,
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString()
+    }));
+  }
+  else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('404 - Página no encontrada');
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`🌐 Servidor HTTP corriendo en puerto ${PORT}`);
+});
+// === FIN SERVIDOR HTTP ===
+
+// AHORA SÍ creamos el cliente UNA SOLA VEZ
+client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
@@ -9,7 +79,7 @@ const client = new Client({
   ],
 });
 
-let data = { puntos: {}, niveles: {} };
+// Continúa con el resto del código original...
 let config = { 
   levelRoles: {},
   ajustes: {
@@ -23,6 +93,7 @@ let config = {
   },
   comandosPersonalizados: {}
 };
+// ... resto igual
 let sorteo = { activo: false, premio: "", costoPorParticipacion: 0, participantes: {} };
 
 if (fs.existsSync("data.json")) {

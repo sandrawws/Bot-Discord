@@ -75,7 +75,9 @@ client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,  // Para detectar entrada/salida de voz
+    GatewayIntentBits.GuildMembers       // Para obtener información de miembros
   ],
 });
 
@@ -84,7 +86,7 @@ let config = {
   levelRoles: {},
   ajustes: {
     puntosporMensaje: 1,
-    puntosporVoz: 2,
+    puntosporVoz: 1,
     multiplicadorExp: 1,
     prefijo: "!",
     canalAnuncios: null,
@@ -115,7 +117,7 @@ if (fs.existsSync("config.json")) {
     levelRoles: loadedConfig.levelRoles || {},
     ajustes: {
       puntosporMensaje: loadedConfig.ajustes?.puntosporMensaje || 1,
-      puntosporVoz: loadedConfig.ajustes?.puntosporVoz || 2,
+      puntosporVoz: loadedConfig.ajustes?.puntosporVoz || 1,
       multiplicadorExp: loadedConfig.ajustes?.multiplicadorExp || 1,
       prefijo: loadedConfig.ajustes?.prefijo || "!",
       canalAnuncios: loadedConfig.ajustes?.canalAnuncios || null,
@@ -235,6 +237,7 @@ client.on("messageCreate", async (msg) => {
           \`!admin configurar <ajuste> <valor>\` - Configurar bot
           \`!admin ver_config\` - Ver configuración actual
           \`!admin comando crear/editar/eliminar/lista\` - Gestionar comandos personalizados
+          \`!clear [cantidad]\` - Borrar mensajes del canal (máx 100)
           \`!ip\` - Mostrar información personalizada del servidor
           `, 
           inline: false 
@@ -623,7 +626,7 @@ client.on("messageCreate", async (msg) => {
         }
 
         // Verificar que no sea un comando existente del sistema
-        const comandosSistema = ['puntos', 'top', 'perfil', 'setrol', 'verroles', 'admin', 'sorteo', 'help', 'ayuda', 'comandos', 'ip'];
+        const comandosSistema = ['puntos', 'top', 'perfil', 'setrol', 'verroles', 'admin', 'sorteo', 'help', 'ayuda', 'comandos', 'ip', 'clear'];
         if (comandosSistema.includes(nombreComando)) {
           msg.reply(`❌ No puedes usar **${nombreComando}** porque es un comando del sistema.`);
           return;
@@ -706,7 +709,160 @@ client.on("messageCreate", async (msg) => {
     }
 
     else {
-      msg.reply("❓ Comandos disponibles: `dar`, `quitar`, `reset`, `configurar`, `ver_config`, `comando`");
+      msg.reply("❓ Comandos disponibles: `dar`, `quitar`, `reset`, `configurar`, `ver_config`, `comando`, `clear`");
+    }
+  }
+
+  // COMANDO CLEAR (solo administradores)
+  if (cmd === "!clear") {
+    if (!msg.member.permissions.has("Administrator")) {
+      msg.reply("🚫 Solo los administradores pueden usar este comando.");
+      return;
+    }
+
+    // Obtener cantidad de mensajes a borrar (por defecto 100, máximo 100)
+    let cantidad = 100;
+    if (args[1]) {
+      const cantidadInput = parseInt(args[1]);
+      if (!isNaN(cantidadInput) && cantidadInput > 0) {
+        cantidad = Math.min(cantidadInput, 100); // Discord limita a 100 mensajes por vez
+      }
+    }
+
+    try {
+      // Confirmar con el usuario antes de borrar
+      const confirmEmbed = new EmbedBuilder()
+        .setColor("#FF6B6B")
+        .setTitle("⚠️ Confirmación de Borrado")
+        .setDescription(`¿Estás seguro de que quieres borrar **${cantidad} mensajes** del canal ${msg.channel}?`)
+        .addFields(
+          { name: "📝 Uso completo", value: "`!clear [cantidad]` - cantidad opcional (1-100)", inline: false },
+          { name: "⚠️ Advertencia", value: "Solo se pueden borrar mensajes de menos de 14 días", inline: false }
+        )
+        .setFooter({ text: "Reacciona con ✅ para confirmar o ❌ para cancelar" })
+        .setTimestamp();
+
+      const confirmMessage = await msg.reply({ embeds: [confirmEmbed] });
+      
+      // Agregar reacciones
+      await confirmMessage.react("✅");
+      await confirmMessage.react("❌");
+
+      // Crear filtro para las reacciones
+      const filter = (reaction, user) => {
+        return ['✅', '❌'].includes(reaction.emoji.name) && user.id === msg.author.id;
+      };
+
+      // Esperar reacción del usuario (30 segundos)
+      const collected = await confirmMessage.awaitReactions({ 
+        filter, 
+        max: 1, 
+        time: 30000, 
+        errors: ['time'] 
+      }).catch(() => null);
+
+      if (!collected) {
+        const timeoutEmbed = new EmbedBuilder()
+          .setColor("#95A5A6")
+          .setTitle("⏰ Tiempo agotado")
+          .setDescription("Operación de borrado cancelada por timeout.")
+          .setTimestamp();
+        
+        await confirmMessage.edit({ embeds: [timeoutEmbed] });
+        return;
+      }
+
+      const reaction = collected.first();
+
+      if (reaction.emoji.name === '❌') {
+        const cancelEmbed = new EmbedBuilder()
+          .setColor("#95A5A6")
+          .setTitle("❌ Operación cancelada")
+          .setDescription("No se borraron mensajes.")
+          .setTimestamp();
+        
+        await confirmMessage.edit({ embeds: [cancelEmbed] });
+        return;
+      }
+
+      if (reaction.emoji.name === '✅') {
+        // Proceder con el borrado
+        const loadingEmbed = new EmbedBuilder()
+          .setColor("#F39C12")
+          .setTitle("🔄 Borrando mensajes...")
+          .setDescription("Por favor espera mientras se eliminan los mensajes.")
+          .setTimestamp();
+        
+        await confirmMessage.edit({ embeds: [loadingEmbed] });
+
+        // Obtener mensajes del canal (excluyendo el mensaje de confirmación)
+        const messagesToDelete = await msg.channel.messages.fetch({ 
+          limit: cantidad + 2, // +2 para el comando original y el de confirmación
+          before: confirmMessage.id 
+        });
+
+        // Filtrar mensajes de menos de 14 días (limitación de Discord)
+        const now = Date.now();
+        const fourteenDays = 14 * 24 * 60 * 60 * 1000;
+        const validMessages = messagesToDelete.filter(m => now - m.createdTimestamp < fourteenDays);
+
+        if (validMessages.size === 0) {
+          const noMessagesEmbed = new EmbedBuilder()
+            .setColor("#F39C12")
+            .setTitle("⚠️ Sin mensajes para borrar")
+            .setDescription("No se encontraron mensajes válidos para borrar (solo se pueden borrar mensajes de menos de 14 días).")
+            .setTimestamp();
+          
+          await confirmMessage.edit({ embeds: [noMessagesEmbed] });
+          return;
+        }
+
+        // Borrar mensajes en lotes (Discord limita a 100 por bulkDelete)
+        const deletedCount = validMessages.size;
+        await msg.channel.bulkDelete(validMessages, true);
+
+        // Borrar también el mensaje de confirmación
+        await confirmMessage.delete().catch(() => {});
+
+        // Mensaje de éxito (se auto-borra después de 5 segundos)
+        const successEmbed = new EmbedBuilder()
+          .setColor("#00FF00")
+          .setTitle("✅ Mensajes borrados exitosamente")
+          .setDescription(`Se borraron **${deletedCount}** mensajes del canal.`)
+          .addFields(
+            { name: "🗑️ Borrados por", value: `<@${msg.author.id}>`, inline: true },
+            { name: "📍 Canal", value: `${msg.channel}`, inline: true }
+          )
+          .setFooter({ text: "Este mensaje se auto-borrará en 5 segundos" })
+          .setTimestamp();
+
+        const successMessage = await msg.channel.send({ embeds: [successEmbed] });
+        
+        // Auto-borrar el mensaje de éxito después de 5 segundos
+        setTimeout(async () => {
+          try {
+            await successMessage.delete();
+          } catch (error) {
+            console.log("No se pudo auto-borrar el mensaje de éxito");
+          }
+        }, 5000);
+
+        console.log(`🗑️ ${msg.author.username} borró ${deletedCount} mensajes en ${msg.channel.name}`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Error en comando clear: ${error.message}`);
+      
+      const errorEmbed = new EmbedBuilder()
+        .setColor("#FF0000")
+        .setTitle("❌ Error al borrar mensajes")
+        .setDescription(`Ocurrió un error: ${error.message}`)
+        .addFields(
+          { name: "💡 Posibles causas", value: "• Falta de permisos\n• Mensajes muy antiguos (>14 días)\n• Error de conexión", inline: false }
+        )
+        .setTimestamp();
+
+      msg.reply({ embeds: [errorEmbed] });
     }
   }
 
@@ -935,6 +1091,152 @@ client.on("messageCreate", async (msg) => {
 
     msg.reply({ embeds: [embed] });
   }
+});
+
+// ===============================
+// SISTEMA DE PUNTOS POR VOZ
+// ===============================
+
+// Objeto para rastrear usuarios en canales de voz
+let voiceTracking = {};
+
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  const userId = newState.member.id;
+  const username = newState.member.user.username;
+  
+  try {
+    // Usuario ENTRA a un canal de voz (no estaba en ninguno antes)
+    if (!oldState.channel && newState.channel) {
+      voiceTracking[userId] = {
+        startTime: Date.now(),
+        channelName: newState.channel.name
+      };
+      console.log(`🎤 ${username} entró al canal de voz: ${newState.channel.name}`);
+    }
+    
+    // Usuario SALE de un canal de voz (ahora no está en ninguno)
+    else if (oldState.channel && !newState.channel) {
+      if (voiceTracking[userId]) {
+        const timeInVoice = Date.now() - voiceTracking[userId].startTime;
+        const minutesInVoice = Math.floor(timeInVoice / 60000); // Convertir a minutos
+        
+        console.log(`🎤 ${username} salió del canal de voz: ${oldState.channel.name} (${minutesInVoice} minutos)`);
+        
+        // Solo dar puntos si estuvo al menos 1 minuto
+        if (minutesInVoice >= 1) {
+          const puntosGanados = minutesInVoice * config.ajustes.puntosporVoz;
+          
+          // Inicializar datos del usuario si no existen
+          if (!data.puntos[userId]) data.puntos[userId] = 0;
+          if (!data.niveles[userId]) data.niveles[userId] = 0;
+          
+          // Dar puntos
+          data.puntos[userId] += puntosGanados;
+          saveData();
+          
+          console.log(`💰 ${username} ganó ${puntosGanados} puntos por ${minutesInVoice} minutos en voz`);
+          
+          // Verificar subida de nivel
+          const oldLevel = data.niveles[userId];
+          const newLevel = getLevel(data.puntos[userId]);
+          
+          if (newLevel > oldLevel) {
+            data.niveles[userId] = newLevel;
+            saveData();
+            
+            // Intentar encontrar un canal para notificar el nivel
+            const guild = newState.guild;
+            if (guild) {
+              // Buscar un canal general para notificar
+              const generalChannel = guild.channels.cache.find(ch => 
+                ch.type === 0 && (ch.name.includes('general') || ch.name.includes('chat'))
+              ) || guild.channels.cache.find(ch => ch.type === 0); // Cualquier canal de texto
+              
+              if (generalChannel) {
+                const embed = new EmbedBuilder()
+                  .setColor("#00FF00")
+                  .setTitle("✨ ¡Nivel alcanzado por actividad de voz! ✨")
+                  .setDescription(`🎉 <@${userId}> ha subido al **Nivel ${newLevel}** por su actividad en canales de voz!`)
+                  .addFields(
+                    { name: "⏰ Tiempo en voz", value: `${minutesInVoice} minutos`, inline: true },
+                    { name: "💰 Puntos ganados", value: `${puntosGanados}`, inline: true }
+                  )
+                  .setTimestamp();
+                
+                try {
+                  await generalChannel.send({ embeds: [embed] });
+                  
+                  // Verificar roles por nivel
+                  const member = await guild.members.fetch(userId).catch(() => null);
+                  if (member) {
+                    for (let lvl in config.levelRoles) {
+                      if (newLevel >= parseInt(lvl)) {
+                        let roleId = config.levelRoles[lvl];
+                        let role = guild.roles.cache.get(roleId);
+                        if (role) {
+                          // Remover roles de niveles anteriores
+                          for (let oldRoleId of Object.values(config.levelRoles)) {
+                            if (member.roles.cache.has(oldRoleId) && oldRoleId !== roleId) {
+                              await member.roles.remove(oldRoleId).catch(() => {});
+                            }
+                          }
+                          // Agregar nuevo rol
+                          if (!member.roles.cache.has(roleId)) {
+                            await member.roles.add(roleId).catch(() => {});
+                            generalChannel.send(
+                              `🔰 <@${userId}> ha conseguido el rol **${role.name}** por llegar al Nivel ${newLevel}!`
+                            );
+                          }
+                        }
+                      }
+                    }
+                  }
+                } catch (error) {
+                  console.log(`❌ Error al enviar notificación de nivel: ${error.message}`);
+                }
+              }
+            }
+          }
+        }
+        
+        // Limpiar seguimiento
+        delete voiceTracking[userId];
+      }
+    }
+    
+    // Usuario CAMBIA de canal de voz (actualizar el tracking)
+    else if (oldState.channel && newState.channel && oldState.channel.id !== newState.channel.id) {
+      if (voiceTracking[userId]) {
+        // Mantener el tiempo de inicio, solo actualizar el canal
+        voiceTracking[userId].channelName = newState.channel.name;
+        console.log(`🔄 ${username} se movió a: ${newState.channel.name}`);
+      }
+    }
+    
+  } catch (error) {
+    console.error(`❌ Error en sistema de voz: ${error.message}`);
+  }
+});
+
+// Evento cuando el bot se conecta - mostrar usuarios ya en voz
+client.on("ready", () => {
+  console.log(`🤖 Bot conectado como ${client.user.tag}`);
+  console.log(`🌐 Servidor HTTP disponible en puerto ${PORT}`);
+  console.log(`💰 Sistema de puntos: ${config.ajustes.puntosporMensaje} por mensaje, ${config.ajustes.puntosporVoz} por minuto de voz`);
+  
+  // Inicializar tracking para usuarios ya conectados a voz
+  client.guilds.cache.forEach(guild => {
+    guild.voiceStates.cache.forEach(voiceState => {
+      if (voiceState.channel && !voiceState.member.user.bot) {
+        const userId = voiceState.member.id;
+        voiceTracking[userId] = {
+          startTime: Date.now(),
+          channelName: voiceState.channel.name
+        };
+        console.log(`🎤 Usuario ya en voz detectado: ${voiceState.member.user.username} en ${voiceState.channel.name}`);
+      }
+    });
+  });
 });
 
 client.login(process.env.DISCORD_TOKEN);

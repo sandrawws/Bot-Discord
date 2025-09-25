@@ -2,7 +2,7 @@
   "levelRoles": {},
   "ajustes": {
     "puntosporMensaje": 1,
-    "puntosporVoz": 2,
+    "puntosporVoz": 1,
     "multiplicadorExp": 1,
     "prefijo": "!",
     "canalAnuncios": null,

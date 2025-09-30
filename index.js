@@ -2,15 +2,14 @@ import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
 import fs from "fs";
 import http from "http";
 
-// === SERVIDOR HTTP PARA RENDER ===
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
-// Declarar variables ANTES del servidor para poder usarlas
 let data = { puntos: {}, niveles: {} };
-let client; // Declaramos pero no creamos aún
+let claims = { ultimosClaims: {} };
+let vipTracking = { vipUsers: {} };
+let client;
 
 const server = http.createServer((req, res) => {
-  // Página básica para mostrar estado del bot
   if (req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
@@ -39,8 +38,8 @@ const server = http.createServer((req, res) => {
           <ul>
             <li><code>!help</code> - Ver todos los comandos</li>
             <li><code>!puntos</code> - Ver tus puntos</li>
+            <li><code>!claim</code> - Reclamar puntos diarios</li>
             <li><code>!top</code> - Ranking</li>
-            <li><code>!admin dar @usuario 100</code> - Dar puntos (admin)</li>
           </ul>
         </div>
       </body>
@@ -48,7 +47,6 @@ const server = http.createServer((req, res) => {
     `);
   } 
   else if (req.url === '/status') {
-    // API endpoint para verificar estado
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: client?.user ? 'online' : 'offline',
@@ -68,20 +66,17 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`🌐 Servidor HTTP corriendo en puerto ${PORT}`);
 });
-// === FIN SERVIDOR HTTP ===
 
-// AHORA SÍ creamos el cliente UNA SOLA VEZ
 client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates,  // Para detectar entrada/salida de voz
-    GatewayIntentBits.GuildMembers       // Para obtener información de miembros
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers
   ],
 });
 
-// Continúa con el resto del código original...
 let config = { 
   levelRoles: {},
   ajustes: {
@@ -91,16 +86,27 @@ let config = {
     prefijo: "!",
     canalAnuncios: null,
     rolAdmin: null,
+    rolVIP: null,
+    multiplicadorVIP: 2,
+    puntosClaimDiario: 100,
     mensajeIP: "🌐 **Información del Servidor**\nIP: No configurada\nUsa `!admin configurar ip <texto>` para personalizar este mensaje."
   },
   comandosPersonalizados: {}
 };
-// ... resto igual
+
 let sorteo = { activo: false, premio: "", costoPorParticipacion: 0, participantes: {} };
 
 if (fs.existsSync("data.json")) {
   const loadedData = JSON.parse(fs.readFileSync("data.json"));
   data = { puntos: loadedData.puntos || {}, niveles: loadedData.niveles || {} };
+}
+if (fs.existsSync("claims.json")) {
+  const loadedClaims = JSON.parse(fs.readFileSync("claims.json"));
+  claims = { ultimosClaims: loadedClaims.ultimosClaims || {} };
+}
+if (fs.existsSync("vipTracking.json")) {
+  const loadedVipTracking = JSON.parse(fs.readFileSync("vipTracking.json"));
+  vipTracking = { vipUsers: loadedVipTracking.vipUsers || {} };
 }
 if (fs.existsSync("sorteo.json")) {
   const loadedSorteo = JSON.parse(fs.readFileSync("sorteo.json"));
@@ -122,6 +128,9 @@ if (fs.existsSync("config.json")) {
       prefijo: loadedConfig.ajustes?.prefijo || "!",
       canalAnuncios: loadedConfig.ajustes?.canalAnuncios || null,
       rolAdmin: loadedConfig.ajustes?.rolAdmin || null,
+      rolVIP: loadedConfig.ajustes?.rolVIP || null,
+      multiplicadorVIP: loadedConfig.ajustes?.multiplicadorVIP || 2,
+      puntosClaimDiario: loadedConfig.ajustes?.puntosClaimDiario || 100,
       mensajeIP: loadedConfig.ajustes?.mensajeIP || "🌐 **Información del Servidor**\nIP: No configurada\nUsa `!admin configurar ip <texto>` para personalizar este mensaje."
     },
     comandosPersonalizados: loadedConfig.comandosPersonalizados || {}
@@ -137,9 +146,20 @@ function saveConfig() {
 function saveSorteo() {
   fs.writeFileSync("sorteo.json", JSON.stringify(sorteo, null, 2));
 }
+function saveClaims() {
+  fs.writeFileSync("claims.json", JSON.stringify(claims, null, 2));
+}
+function saveVipTracking() {
+  fs.writeFileSync("vipTracking.json", JSON.stringify(vipTracking, null, 2));
+}
 
 function getLevel(puntos) {
   return Math.floor(Math.sqrt(puntos) / 2);
+}
+
+function isUserVIP(member) {
+  if (!config.ajustes.rolVIP) return false;
+  return member.roles.cache.has(config.ajustes.rolVIP);
 }
 
 async function checkLevelUp(userId, msg) {
@@ -186,20 +206,24 @@ async function checkLevelUp(userId, msg) {
   }
 }
 
-client.on("messageCreate", (msg) => {
+client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
 
   let userId = msg.author.id;
   if (!data.puntos[userId]) data.puntos[userId] = 0;
   if (!data.niveles[userId]) data.niveles[userId] = 0;
 
-  data.puntos[userId] += config.ajustes.puntosporMensaje;
+  let puntosBase = config.ajustes.puntosporMensaje;
+  
+  const member = await msg.guild.members.fetch(userId).catch(() => null);
+  if (member && isUserVIP(member)) {
+    puntosBase = puntosBase * config.ajustes.multiplicadorVIP;
+  }
+
+  data.puntos[userId] += puntosBase;
   saveData();
   checkLevelUp(userId, msg);
 });
-
-// Voice channel monitoring disabled - requires privileged intents
-// Users earn points only through messages for now
 
 client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
@@ -208,6 +232,10 @@ client.on("messageCreate", async (msg) => {
   const cmd = args[0].toLowerCase();
 
   if (cmd === "!help" || cmd === "!ayuda" || cmd === "!comandos") {
+    const vipInfo = config.ajustes.rolVIP 
+      ? `\n• **Usuarios VIP** ganan **${config.ajustes.multiplicadorVIP}x** más puntos`
+      : "";
+    
     const embed = new EmbedBuilder()
       .setColor("#3498DB")
       .setTitle("📋 Comandos del Bot de Puntos y Sorteos")
@@ -217,6 +245,7 @@ client.on("messageCreate", async (msg) => {
           name: "👤 **Comandos para Usuarios**", 
           value: `
           \`!puntos\` - Ver tus puntos y nivel
+          \`!claim\` - Reclamar ${config.ajustes.puntosClaimDiario} puntos diarios (cada 24h)
           \`!top\` - Ranking de usuarios
           \`!perfil [@usuario]\` - Ver perfil (tuyo o de otro)
           \`!sorteo participar <puntos>\` - Participar en sorteo
@@ -254,14 +283,85 @@ client.on("messageCreate", async (msg) => {
           name: "💡 **Información Adicional**", 
           value: `
           • Ganas **${config.ajustes.puntosporMensaje} punto(s)** por mensaje
+          • Ganas **${config.ajustes.puntosporVoz} punto(s)** por minuto en voz${vipInfo}
+          • Reclama **${config.ajustes.puntosClaimDiario} puntos** cada 24h con \`!claim\`
           • Los niveles se calculan automáticamente
-          • Puedes gastar puntos en sorteos
           • Los admins pueden configurar todo desde Discord
           `, 
           inline: false 
         }
       )
       .setFooter({ text: `Bot configurado para ${msg.guild.name}` })
+      .setTimestamp();
+
+    msg.reply({ embeds: [embed] });
+    return;
+  }
+
+  if (cmd === "!claim") {
+    const userId = msg.author.id;
+    const ahora = Date.now();
+    const ultimoClaim = claims.ultimosClaims[userId] || 0;
+    const tiempoTranscurrido = ahora - ultimoClaim;
+    const COOLDOWN = 24 * 60 * 60 * 1000;
+
+    if (tiempoTranscurrido < COOLDOWN) {
+      const tiempoRestante = COOLDOWN - tiempoTranscurrido;
+      const horasRestantes = Math.floor(tiempoRestante / (60 * 60 * 1000));
+      const minutosRestantes = Math.floor((tiempoRestante % (60 * 60 * 1000)) / (60 * 1000));
+      
+      const embed = new EmbedBuilder()
+        .setColor("#FF6B6B")
+        .setTitle("⏰ Claim no disponible")
+        .setDescription(`Ya has reclamado tus puntos diarios. Vuelve en:`)
+        .addFields(
+          { name: "⏱️ Tiempo restante", value: `${horasRestantes}h ${minutosRestantes}m`, inline: true }
+        )
+        .setFooter({ text: "¡Vuelve mañana para reclamar más puntos!" })
+        .setTimestamp();
+      
+      msg.reply({ embeds: [embed] });
+      return;
+    }
+
+    if (!data.puntos[userId]) data.puntos[userId] = 0;
+    if (!data.niveles[userId]) data.niveles[userId] = 0;
+
+    const member = await msg.guild.members.fetch(userId).catch(() => null);
+    const esVIP = member && isUserVIP(member);
+    
+    let puntosReclamados = config.ajustes.puntosClaimDiario;
+    if (esVIP) {
+      puntosReclamados = Math.floor(puntosReclamados * config.ajustes.multiplicadorVIP);
+    }
+    
+    data.puntos[userId] += puntosReclamados;
+    claims.ultimosClaims[userId] = ahora;
+    
+    saveData();
+    saveClaims();
+    await checkLevelUp(userId, msg);
+
+    const embedFields = [
+      { name: "💰 Puntos reclamados", value: `${puntosReclamados}`, inline: true },
+      { name: "📊 Total puntos", value: `${data.puntos[userId]}`, inline: true },
+      { name: "⏰ Próximo claim", value: "24 horas", inline: true }
+    ];
+
+    if (esVIP) {
+      embedFields.push({ 
+        name: "👑 Bonus VIP", 
+        value: `¡Recibiste ${config.ajustes.multiplicadorVIP}x más puntos!`, 
+        inline: false 
+      });
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(esVIP ? "#FFD700" : "#00FF00")
+      .setTitle(esVIP ? "🎁 ¡Claim VIP Exitoso! 👑" : "🎁 ¡Claim Exitoso!")
+      .setDescription(`¡Has reclamado tus puntos diarios!`)
+      .addFields(embedFields)
+      .setFooter({ text: "¡Vuelve mañana para reclamar más puntos!" })
       .setTimestamp();
 
     msg.reply({ embeds: [embed] });
@@ -284,7 +384,12 @@ client.on("messageCreate", async (msg) => {
     let userId = msg.author.id;
     let score = data.puntos[userId] || 0;
     let level = data.niveles[userId] || 0;
-    msg.reply(`Tienes **${score} puntos** y eres **Nivel ${level}**.`);
+    
+    const member = await msg.guild.members.fetch(userId).catch(() => null);
+    const esVIP = member && isUserVIP(member);
+    const vipText = esVIP ? " 👑 **(VIP)**" : "";
+    
+    msg.reply(`Tienes **${score} puntos** y eres **Nivel ${level}**${vipText}.`);
   }
 
   if (cmd === "!top") {
@@ -306,7 +411,11 @@ client.on("messageCreate", async (msg) => {
       let user = await client.users.fetch(userId).catch(() => null);
       let level = data.niveles[userId] || 0;
       let icon = emojis[i] || `#${i + 1}`;
-      ranking += `${icon} ${user ? user.username : "Usuario desconocido"} — **${score} puntos** | 🎯 Nivel ${level}\n`;
+      
+      const member = await msg.guild.members.fetch(userId).catch(() => null);
+      const vipIcon = (member && isUserVIP(member)) ? " 👑" : "";
+      
+      ranking += `${icon} ${user ? user.username : "Usuario desconocido"}${vipIcon} — **${score} puntos** | 🎯 Nivel ${level}\n`;
     }
 
     const embed = new EmbedBuilder()
@@ -372,22 +481,29 @@ client.on("messageCreate", async (msg) => {
       }
     }
 
+    const member = await msg.guild.members.fetch(userId).catch(() => null);
+    const esVIP = member && isUserVIP(member);
+    const vipField = esVIP ? { name: "👑 Estado VIP", value: "Usuario VIP", inline: true } : null;
+
+    const embedFields = [
+      { name: "⭐ Puntos", value: `${score}`, inline: true },
+      { name: "🎯 Nivel", value: `${level}`, inline: true },
+      { name: "🔰 Rol actual", value: roleName, inline: true }
+    ];
+
+    if (vipField) embedFields.push(vipField);
+
     const embed = new EmbedBuilder()
       .setColor("#1ABC9C")
       .setTitle(`👤 Perfil de ${user.username}`)
       .setThumbnail(user.displayAvatarURL({ dynamic: true, size: 256 }))
-      .addFields(
-        { name: "⭐ Puntos", value: `${score}`, inline: true },
-        { name: "🎯 Nivel", value: `${level}`, inline: true },
-        { name: "🔰 Rol actual", value: roleName, inline: true }
-      )
+      .addFields(embedFields)
       .setFooter({ text: `Servidor: ${msg.guild.name}`, iconURL: msg.guild.iconURL({ dynamic: true }) })
       .setTimestamp();
 
     msg.reply({ embeds: [embed] });
   }
 
-  // SISTEMA DE ADMINISTRACIÓN Y AJUSTES
   if (cmd === "!admin") {
     if (!msg.member.permissions.has("Administrator")) {
       msg.reply("🚫 Solo los administradores pueden usar estos comandos.");
@@ -426,7 +542,6 @@ client.on("messageCreate", async (msg) => {
       data.puntos[userId] += cantidad;
       saveData();
       
-      // Verificar subida de nivel
       await checkLevelUp(userId, msg);
 
       const embed = new EmbedBuilder()
@@ -518,7 +633,7 @@ client.on("messageCreate", async (msg) => {
 
     else if (subcommand === "configurar") {
       if (args.length < 4) {
-        msg.reply("❓ Ajustes disponibles: `puntos_mensaje`, `multiplicador`, `prefijo`, `ip`\nUso: `!admin configurar <ajuste> <valor>`");
+        msg.reply("❓ Ajustes disponibles:\n• `puntos_mensaje` - Puntos por mensaje\n• `puntos_voz` - Puntos por minuto en voz\n• `multiplicador` - Multiplicador de EXP\n• `prefijo` - Prefijo de comandos\n• `rol_vip` - Configurar rol VIP (@rol)\n• `multiplicador_vip` - Multiplicador para usuarios VIP\n• `claim_diario` - Puntos por claim diario\n• `ip` - Mensaje personalizado\n\nUso: `!admin configurar <ajuste> <valor>`");
         return;
       }
 
@@ -534,6 +649,17 @@ client.on("messageCreate", async (msg) => {
         config.ajustes.puntosporMensaje = nuevoValor;
         saveConfig();
         msg.reply(`✅ Puntos por mensaje configurados a: **${nuevoValor}**`);
+      }
+
+      else if (ajuste === "puntos_voz") {
+        const nuevoValor = parseInt(valor);
+        if (isNaN(nuevoValor) || nuevoValor < 0) {
+          msg.reply("⚠️ El valor debe ser un número mayor o igual a 0.");
+          return;
+        }
+        config.ajustes.puntosporVoz = nuevoValor;
+        saveConfig();
+        msg.reply(`✅ Puntos por minuto de voz configurados a: **${nuevoValor}**`);
       }
 
       else if (ajuste === "multiplicador") {
@@ -557,8 +683,50 @@ client.on("messageCreate", async (msg) => {
         msg.reply(`✅ Prefijo del bot cambiado a: **${valor}**`);
       }
 
+      else if (ajuste === "rol_vip") {
+        const role = msg.mentions.roles.first();
+        if (!role) {
+          msg.reply("⚠️ Debes mencionar un rol válido. Uso: `!admin configurar rol_vip @rol`");
+          return;
+        }
+        config.ajustes.rolVIP = role.id;
+        saveConfig();
+        
+        const embed = new EmbedBuilder()
+          .setColor("#FFD700")
+          .setTitle("👑 Rol VIP Configurado")
+          .setDescription(`El rol **${role.name}** ahora es VIP`)
+          .addFields(
+            { name: "💎 Beneficios", value: `Los usuarios con este rol ganan **${config.ajustes.multiplicadorVIP}x** más puntos`, inline: false }
+          )
+          .setTimestamp();
+        
+        msg.reply({ embeds: [embed] });
+      }
+
+      else if (ajuste === "multiplicador_vip") {
+        const nuevoValor = parseFloat(valor);
+        if (isNaN(nuevoValor) || nuevoValor <= 0) {
+          msg.reply("⚠️ El multiplicador VIP debe ser un número mayor a 0.");
+          return;
+        }
+        config.ajustes.multiplicadorVIP = nuevoValor;
+        saveConfig();
+        msg.reply(`✅ Multiplicador VIP configurado a: **${nuevoValor}x**`);
+      }
+
+      else if (ajuste === "claim_diario") {
+        const nuevoValor = parseInt(valor);
+        if (isNaN(nuevoValor) || nuevoValor < 1) {
+          msg.reply("⚠️ El valor debe ser un número mayor a 0.");
+          return;
+        }
+        config.ajustes.puntosClaimDiario = nuevoValor;
+        saveConfig();
+        msg.reply(`✅ Puntos por claim diario configurados a: **${nuevoValor}**`);
+      }
+
       else if (ajuste === "ip") {
-        // Unir todos los argumentos a partir del tercero para permitir espacios
         const nuevoMensaje = args.slice(3).join(" ");
         if (nuevoMensaje.length < 1) {
           msg.reply("⚠️ El mensaje no puede estar vacío.");
@@ -583,21 +751,28 @@ client.on("messageCreate", async (msg) => {
       }
 
       else {
-        msg.reply("❌ Ajuste no válido. Disponibles: `puntos_mensaje`, `multiplicador`, `prefijo`, `ip`");
+        msg.reply("❌ Ajuste no válido. Usa `!admin configurar` sin parámetros para ver la lista completa.");
       }
     }
 
     else if (subcommand === "ver_config") {
+      const rolVIPNombre = config.ajustes.rolVIP 
+        ? (msg.guild.roles.cache.get(config.ajustes.rolVIP)?.name || "Rol eliminado")
+        : "No configurado";
+
       const embed = new EmbedBuilder()
         .setColor("#4ECDC4")
         .setTitle("⚙️ Configuración Actual del Bot")
         .addFields(
           { name: "💬 Puntos por mensaje", value: `${config.ajustes.puntosporMensaje}`, inline: true },
+          { name: "🎤 Puntos por minuto voz", value: `${config.ajustes.puntosporVoz}`, inline: true },
           { name: "🔢 Multiplicador EXP", value: `${config.ajustes.multiplicadorExp}x`, inline: true },
+          { name: "👑 Rol VIP", value: rolVIPNombre, inline: true },
+          { name: "💎 Multiplicador VIP", value: `${config.ajustes.multiplicadorVIP}x`, inline: true },
+          { name: "🎁 Claim diario", value: `${config.ajustes.puntosClaimDiario} puntos`, inline: true },
           { name: "🎯 Prefijo", value: `${config.ajustes.prefijo}`, inline: true },
-          { name: "📊 Total usuarios registrados", value: `${Object.keys(data.puntos).length}`, inline: true },
-          { name: "🏆 Roles configurados", value: `${Object.keys(config.levelRoles).length}`, inline: true },
-          { name: "🎲 Sorteo activo", value: sorteo.activo ? "Sí" : "No", inline: true }
+          { name: "📊 Total usuarios", value: `${Object.keys(data.puntos).length}`, inline: true },
+          { name: "🏆 Roles configurados", value: `${Object.keys(config.levelRoles).length}`, inline: true }
         )
         .setFooter({ text: `Consultado por: ${msg.author.username}` })
         .setTimestamp();
@@ -625,8 +800,7 @@ client.on("messageCreate", async (msg) => {
           return;
         }
 
-        // Verificar que no sea un comando existente del sistema
-        const comandosSistema = ['puntos', 'top', 'perfil', 'setrol', 'verroles', 'admin', 'sorteo', 'help', 'ayuda', 'comandos', 'ip', 'clear'];
+        const comandosSistema = ['puntos', 'top', 'perfil', 'setrol', 'verroles', 'admin', 'sorteo', 'help', 'ayuda', 'comandos', 'ip', 'clear', 'claim'];
         if (comandosSistema.includes(nombreComando)) {
           msg.reply(`❌ No puedes usar **${nombreComando}** porque es un comando del sistema.`);
           return;
@@ -639,10 +813,10 @@ client.on("messageCreate", async (msg) => {
         }
 
         const esNuevo = !config.comandosPersonalizados[nombreComando];
+        
         config.comandosPersonalizados[nombreComando] = {
           texto: textoRespuesta,
           creador: msg.author.username,
-          fechaCreacion: new Date().toISOString(),
           usos: config.comandosPersonalizados[nombreComando]?.usos || 0
         };
         saveConfig();
@@ -650,13 +824,12 @@ client.on("messageCreate", async (msg) => {
         const embed = new EmbedBuilder()
           .setColor("#00FF00")
           .setTitle(`✅ Comando ${esNuevo ? 'Creado' : 'Editado'}`)
-          .setDescription(`Comando **!${nombreComando}** ${esNuevo ? 'creado' : 'actualizado'} exitosamente`)
+          .setDescription(`Comando personalizado **!${nombreComando}** ${esNuevo ? 'creado' : 'editado'} exitosamente`)
           .addFields(
-            { name: "📝 Vista previa", value: textoRespuesta.substring(0, 200) + (textoRespuesta.length > 200 ? "..." : ""), inline: false },
+            { name: "📝 Comando", value: `!${nombreComando}`, inline: true },
             { name: "👤 Creador", value: msg.author.username, inline: true },
-            { name: "📊 Usos", value: `${config.comandosPersonalizados[nombreComando].usos}`, inline: true }
+            { name: "💬 Respuesta", value: textoRespuesta.substring(0, 100) + (textoRespuesta.length > 100 ? "..." : ""), inline: false }
           )
-          .setFooter({ text: `Usa !${nombreComando} para probarlo` })
           .setTimestamp();
 
         msg.reply({ embeds: [embed] });
@@ -669,6 +842,7 @@ client.on("messageCreate", async (msg) => {
         }
 
         const nombreComando = args[3].toLowerCase().replace(/[^a-z0-9]/g, '');
+        
         if (!config.comandosPersonalizados[nombreComando]) {
           msg.reply(`❌ El comando **!${nombreComando}** no existe.`);
           return;
@@ -676,200 +850,69 @@ client.on("messageCreate", async (msg) => {
 
         delete config.comandosPersonalizados[nombreComando];
         saveConfig();
-        msg.reply(`✅ El comando **!${nombreComando}** ha sido eliminado exitosamente.`);
+
+        msg.reply(`🗑️ Comando **!${nombreComando}** eliminado exitosamente.`);
       }
 
       else if (accion === "lista") {
         const comandos = Object.keys(config.comandosPersonalizados);
+        
         if (comandos.length === 0) {
-          msg.reply("📝 No hay comandos personalizados creados aún.\nUsa `!admin comando crear <nombre> <texto>` para crear uno.");
+          msg.reply("📋 No hay comandos personalizados creados aún.");
           return;
         }
 
         let listaComandos = "";
-        comandos.forEach(cmd => {
+        for (const cmd of comandos) {
           const info = config.comandosPersonalizados[cmd];
-          listaComandos += `\`!${cmd}\` - ${info.usos} usos (por ${info.creador})\n`;
-        });
+          listaComandos += `• **!${cmd}** - Creado por ${info.creador} | Usos: ${info.usos}\n`;
+        }
 
         const embed = new EmbedBuilder()
-          .setColor("#3498DB")
+          .setColor("#9B59B6")
           .setTitle("📋 Comandos Personalizados")
-          .setDescription(`**Total:** ${comandos.length} comando(s)`)
-          .addFields({ name: "📝 Lista de comandos", value: listaComandos, inline: false })
-          .setFooter({ text: "Usa !admin comando editar <nombre> <nuevo_texto> para modificar" })
+          .setDescription(listaComandos || "No hay comandos personalizados.")
+          .setFooter({ text: `Total: ${comandos.length} comandos` })
           .setTimestamp();
 
         msg.reply({ embeds: [embed] });
       }
 
       else {
-        msg.reply("❓ Acciones disponibles: `crear`, `editar`, `eliminar`, `lista`");
+        msg.reply("❌ Acción no válida. Usa: `crear`, `editar`, `eliminar` o `lista`");
       }
     }
 
     else {
-      msg.reply("❓ Comandos disponibles: `dar`, `quitar`, `reset`, `configurar`, `ver_config`, `comando`, `clear`");
+      msg.reply("❓ Subcomando no válido. Usa `!admin` para ver comandos disponibles.");
     }
   }
 
-  // COMANDO CLEAR (solo administradores)
   if (cmd === "!clear") {
-    if (!msg.member.permissions.has("Administrator")) {
-      msg.reply("🚫 Solo los administradores pueden usar este comando.");
+    if (!msg.member.permissions.has("ManageMessages")) {
+      msg.reply("🚫 No tienes permisos para borrar mensajes.");
       return;
     }
 
-    // Obtener cantidad de mensajes a borrar (por defecto 100, máximo 100)
-    let cantidad = 100;
-    if (args[1]) {
-      const cantidadInput = parseInt(args[1]);
-      if (!isNaN(cantidadInput) && cantidadInput > 0) {
-        cantidad = Math.min(cantidadInput, 100); // Discord limita a 100 mensajes por vez
-      }
-    }
+    let cantidad = parseInt(args[1]) || 10;
+    if (cantidad < 1) cantidad = 1;
+    if (cantidad > 100) cantidad = 100;
 
     try {
-      // Confirmar con el usuario antes de borrar
-      const confirmEmbed = new EmbedBuilder()
-        .setColor("#FF6B6B")
-        .setTitle("⚠️ Confirmación de Borrado")
-        .setDescription(`¿Estás seguro de que quieres borrar **${cantidad} mensajes** del canal ${msg.channel}?`)
-        .addFields(
-          { name: "📝 Uso completo", value: "`!clear [cantidad]` - cantidad opcional (1-100)", inline: false },
-          { name: "⚠️ Advertencia", value: "Solo se pueden borrar mensajes de menos de 14 días", inline: false }
-        )
-        .setFooter({ text: "Reacciona con ✅ para confirmar o ❌ para cancelar" })
-        .setTimestamp();
-
-      const confirmMessage = await msg.reply({ embeds: [confirmEmbed] });
+      const mensajesBorrados = await msg.channel.bulkDelete(cantidad + 1, true);
+      const respuesta = await msg.channel.send(`🗑️ Se han borrado **${mensajesBorrados.size - 1}** mensajes.`);
       
-      // Agregar reacciones
-      await confirmMessage.react("✅");
-      await confirmMessage.react("❌");
-
-      // Crear filtro para las reacciones
-      const filter = (reaction, user) => {
-        return ['✅', '❌'].includes(reaction.emoji.name) && user.id === msg.author.id;
-      };
-
-      // Esperar reacción del usuario (30 segundos)
-      const collected = await confirmMessage.awaitReactions({ 
-        filter, 
-        max: 1, 
-        time: 30000, 
-        errors: ['time'] 
-      }).catch(() => null);
-
-      if (!collected) {
-        const timeoutEmbed = new EmbedBuilder()
-          .setColor("#95A5A6")
-          .setTitle("⏰ Tiempo agotado")
-          .setDescription("Operación de borrado cancelada por timeout.")
-          .setTimestamp();
-        
-        await confirmMessage.edit({ embeds: [timeoutEmbed] });
-        return;
-      }
-
-      const reaction = collected.first();
-
-      if (reaction.emoji.name === '❌') {
-        const cancelEmbed = new EmbedBuilder()
-          .setColor("#95A5A6")
-          .setTitle("❌ Operación cancelada")
-          .setDescription("No se borraron mensajes.")
-          .setTimestamp();
-        
-        await confirmMessage.edit({ embeds: [cancelEmbed] });
-        return;
-      }
-
-      if (reaction.emoji.name === '✅') {
-        // Proceder con el borrado
-        const loadingEmbed = new EmbedBuilder()
-          .setColor("#F39C12")
-          .setTitle("🔄 Borrando mensajes...")
-          .setDescription("Por favor espera mientras se eliminan los mensajes.")
-          .setTimestamp();
-        
-        await confirmMessage.edit({ embeds: [loadingEmbed] });
-
-        // Obtener mensajes del canal (excluyendo el mensaje de confirmación)
-        const messagesToDelete = await msg.channel.messages.fetch({ 
-          limit: cantidad + 2, // +2 para el comando original y el de confirmación
-          before: confirmMessage.id 
-        });
-
-        // Filtrar mensajes de menos de 14 días (limitación de Discord)
-        const now = Date.now();
-        const fourteenDays = 14 * 24 * 60 * 60 * 1000;
-        const validMessages = messagesToDelete.filter(m => now - m.createdTimestamp < fourteenDays);
-
-        if (validMessages.size === 0) {
-          const noMessagesEmbed = new EmbedBuilder()
-            .setColor("#F39C12")
-            .setTitle("⚠️ Sin mensajes para borrar")
-            .setDescription("No se encontraron mensajes válidos para borrar (solo se pueden borrar mensajes de menos de 14 días).")
-            .setTimestamp();
-          
-          await confirmMessage.edit({ embeds: [noMessagesEmbed] });
-          return;
-        }
-
-        // Borrar mensajes en lotes (Discord limita a 100 por bulkDelete)
-        const deletedCount = validMessages.size;
-        await msg.channel.bulkDelete(validMessages, true);
-
-        // Borrar también el mensaje de confirmación
-        await confirmMessage.delete().catch(() => {});
-
-        // Mensaje de éxito (se auto-borra después de 5 segundos)
-        const successEmbed = new EmbedBuilder()
-          .setColor("#00FF00")
-          .setTitle("✅ Mensajes borrados exitosamente")
-          .setDescription(`Se borraron **${deletedCount}** mensajes del canal.`)
-          .addFields(
-            { name: "🗑️ Borrados por", value: `<@${msg.author.id}>`, inline: true },
-            { name: "📍 Canal", value: `${msg.channel}`, inline: true }
-          )
-          .setFooter({ text: "Este mensaje se auto-borrará en 5 segundos" })
-          .setTimestamp();
-
-        const successMessage = await msg.channel.send({ embeds: [successEmbed] });
-        
-        // Auto-borrar el mensaje de éxito después de 5 segundos
-        setTimeout(async () => {
-          try {
-            await successMessage.delete();
-          } catch (error) {
-            console.log("No se pudo auto-borrar el mensaje de éxito");
-          }
-        }, 5000);
-
-        console.log(`🗑️ ${msg.author.username} borró ${deletedCount} mensajes en ${msg.channel.name}`);
-      }
-
+      setTimeout(() => {
+        respuesta.delete().catch(() => {});
+      }, 5000);
     } catch (error) {
-      console.error(`❌ Error en comando clear: ${error.message}`);
-      
-      const errorEmbed = new EmbedBuilder()
-        .setColor("#FF0000")
-        .setTitle("❌ Error al borrar mensajes")
-        .setDescription(`Ocurrió un error: ${error.message}`)
-        .addFields(
-          { name: "💡 Posibles causas", value: "• Falta de permisos\n• Mensajes muy antiguos (>14 días)\n• Error de conexión", inline: false }
-        )
-        .setTimestamp();
-
-      msg.reply({ embeds: [errorEmbed] });
+      msg.reply("❌ Error al borrar mensajes. Es posible que los mensajes sean muy antiguos (más de 14 días).");
     }
   }
 
-  // SISTEMA DE SORTEOS
   if (cmd === "!sorteo") {
     if (args.length < 2) {
-      msg.reply("❓ Uso: `!sorteo crear/participar/ver/finalizar/mis_participaciones`");
+      msg.reply("❓ Comandos disponibles: `crear`, `participar`, `ver`, `mis_participaciones`, `finalizar`");
       return;
     }
 
@@ -880,24 +923,29 @@ client.on("messageCreate", async (msg) => {
         msg.reply("🚫 Solo los administradores pueden crear sorteos.");
         return;
       }
+
+      if (sorteo.activo) {
+        msg.reply("❌ Ya hay un sorteo activo. Usa `!sorteo finalizar` para terminarlo antes de crear uno nuevo.");
+        return;
+      }
+
       if (args.length < 4) {
         msg.reply("❓ Uso: `!sorteo crear <costo_por_participacion> <premio...>`");
         return;
       }
 
       const costo = parseInt(args[2]);
-      if (isNaN(costo) || costo <= 0) {
+      if (isNaN(costo) || costo < 1) {
         msg.reply("⚠️ El costo debe ser un número mayor a 0.");
         return;
       }
 
-      if (sorteo.activo) {
-        msg.reply("⚠️ Ya hay un sorteo activo. Finalízalo primero con `!sorteo finalizar`");
+      const premio = args.slice(3).join(" ");
+      if (premio.length < 1) {
+        msg.reply("⚠️ Debes especificar un premio.");
         return;
       }
 
-      const premio = args.slice(3).join(" ");
-      
       sorteo = {
         activo: true,
         premio: premio,
@@ -907,14 +955,14 @@ client.on("messageCreate", async (msg) => {
       saveSorteo();
 
       const embed = new EmbedBuilder()
-        .setColor("#FFD700")
-        .setTitle("🎊 ¡Nuevo Sorteo Creado! 🎊")
+        .setColor("#9B59B6")
+        .setTitle("🎲 ¡Nuevo Sorteo Creado!")
         .setDescription(`🎁 **Premio:** ${premio}`)
         .addFields(
           { name: "💰 Costo por participación", value: `${costo} puntos`, inline: true },
-          { name: "📝 Cómo participar", value: `\`!sorteo participar <puntos>\``, inline: true }
+          { name: "📝 Cómo participar", value: `\`!sorteo participar <puntos>\``, inline: false }
         )
-        .setFooter({ text: "¡Participa gastando tus puntos!" })
+        .setFooter({ text: "¡Buena suerte a todos!" })
         .setTimestamp();
 
       msg.reply({ embeds: [embed] });
@@ -927,43 +975,51 @@ client.on("messageCreate", async (msg) => {
       }
 
       if (args.length < 3) {
-        msg.reply("❓ Uso: `!sorteo participar <cantidad_puntos>`");
+        msg.reply(`❓ Uso: \`!sorteo participar <puntos>\`\nCosto: **${sorteo.costoPorParticipacion}** puntos por participación`);
         return;
       }
 
-      const cantidad = parseInt(args[2]);
-      if (isNaN(cantidad) || cantidad <= 0) {
-        msg.reply("⚠️ Debes especificar una cantidad válida de puntos.");
-        return;
-      }
-
-      if (cantidad % sorteo.costoPorParticipacion !== 0) {
-        msg.reply(`⚠️ Los puntos deben ser múltiplos de ${sorteo.costoPorParticipacion}. Ejemplo: ${sorteo.costoPorParticipacion}, ${sorteo.costoPorParticipacion * 2}, ${sorteo.costoPorParticipacion * 3}...`);
+      const puntosAGastar = parseInt(args[2]);
+      if (isNaN(puntosAGastar) || puntosAGastar < sorteo.costoPorParticipacion) {
+        msg.reply(`⚠️ Debes gastar al menos **${sorteo.costoPorParticipacion} puntos**.`);
         return;
       }
 
       const userId = msg.author.id;
-      const puntosUsuario = data.puntos[userId] || 0;
+      const puntosActuales = data.puntos[userId] || 0;
 
-      if (puntosUsuario < cantidad) {
-        msg.reply(`❌ No tienes suficientes puntos. Tienes **${puntosUsuario}** puntos y necesitas **${cantidad}**.`);
+      if (puntosActuales < puntosAGastar) {
+        msg.reply(`❌ No tienes suficientes puntos. Tienes **${puntosActuales}** pero intentas gastar **${puntosAGastar}**.`);
         return;
       }
 
-      // Descontar puntos
-      data.puntos[userId] -= cantidad;
-      
-      // Agregar participaciones
-      const participaciones = cantidad / sorteo.costoPorParticipacion;
+      const participacionesCompradas = Math.floor(puntosAGastar / sorteo.costoPorParticipacion);
+      const puntosRealesGastados = participacionesCompradas * sorteo.costoPorParticipacion;
+
+      data.puntos[userId] -= puntosRealesGastados;
+      data.niveles[userId] = getLevel(data.puntos[userId]);
+      saveData();
+
       if (!sorteo.participantes[userId]) {
         sorteo.participantes[userId] = 0;
       }
-      sorteo.participantes[userId] += participaciones;
-
-      saveData();
+      sorteo.participantes[userId] += participacionesCompradas;
       saveSorteo();
 
-      msg.reply(`✅ ¡Participación exitosa! Gastaste **${cantidad} puntos** y obtuviste **${participaciones} participaciones**. Te quedan **${data.puntos[userId]} puntos**.`);
+      const embed = new EmbedBuilder()
+        .setColor("#00FF00")
+        .setTitle("🎫 Participación Exitosa")
+        .setDescription(`Has participado en el sorteo de: **${sorteo.premio}**`)
+        .addFields(
+          { name: "🎫 Participaciones compradas", value: `${participacionesCompradas}`, inline: true },
+          { name: "💰 Puntos gastados", value: `${puntosRealesGastados}`, inline: true },
+          { name: "📊 Puntos restantes", value: `${data.puntos[userId]}`, inline: true },
+          { name: "🎲 Tus participaciones totales", value: `${sorteo.participantes[userId]}`, inline: false }
+        )
+        .setFooter({ text: "¡Buena suerte!" })
+        .setTimestamp();
+
+      msg.reply({ embeds: [embed] });
     }
 
     else if (subcommand === "ver") {
@@ -1032,7 +1088,6 @@ client.on("messageCreate", async (msg) => {
         return;
       }
 
-      // Crear array con todas las participaciones
       let participaciones = [];
       for (let userId in sorteo.participantes) {
         const cantidadParticipaciones = sorteo.participantes[userId];
@@ -1041,7 +1096,6 @@ client.on("messageCreate", async (msg) => {
         }
       }
 
-      // Elegir ganador aleatoriamente
       const indiceGanador = Math.floor(Math.random() * participaciones.length);
       const ganadorId = participaciones[indiceGanador];
       const ganador = await client.users.fetch(ganadorId).catch(() => null);
@@ -1062,7 +1116,6 @@ client.on("messageCreate", async (msg) => {
 
       msg.reply({ embeds: [embed] });
 
-      // Resetear sorteo
       sorteo = { activo: false, premio: "", costoPorParticipacion: 0, participantes: {} };
       saveSorteo();
     }
@@ -1072,11 +1125,8 @@ client.on("messageCreate", async (msg) => {
     }
   }
 
-  // COMANDOS PERSONALIZADOS
-  // Verificar si el comando es personalizado (sin el !)
-  const nombreCmd = cmd.slice(1); // Quitar el "!" del inicio
+  const nombreCmd = cmd.slice(1);
   if (config.comandosPersonalizados[nombreCmd]) {
-    // Incrementar contador de usos
     config.comandosPersonalizados[nombreCmd].usos++;
     saveConfig();
 
@@ -1093,11 +1143,6 @@ client.on("messageCreate", async (msg) => {
   }
 });
 
-// ===============================
-// SISTEMA DE PUNTOS POR VOZ
-// ===============================
-
-// Objeto para rastrear usuarios en canales de voz
 let voiceTracking = {};
 
 client.on("voiceStateUpdate", async (oldState, newState) => {
@@ -1105,7 +1150,6 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
   const username = newState.member.user.username;
   
   try {
-    // Usuario ENTRA a un canal de voz (no estaba en ninguno antes)
     if (!oldState.channel && newState.channel) {
       voiceTracking[userId] = {
         startTime: Date.now(),
@@ -1114,29 +1158,29 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
       console.log(`🎤 ${username} entró al canal de voz: ${newState.channel.name}`);
     }
     
-    // Usuario SALE de un canal de voz (ahora no está en ninguno)
     else if (oldState.channel && !newState.channel) {
       if (voiceTracking[userId]) {
         const timeInVoice = Date.now() - voiceTracking[userId].startTime;
-        const minutesInVoice = Math.floor(timeInVoice / 60000); // Convertir a minutos
+        const minutesInVoice = Math.floor(timeInVoice / 60000);
         
         console.log(`🎤 ${username} salió del canal de voz: ${oldState.channel.name} (${minutesInVoice} minutos)`);
         
-        // Solo dar puntos si estuvo al menos 1 minuto
         if (minutesInVoice >= 1) {
-          const puntosGanados = minutesInVoice * config.ajustes.puntosporVoz;
+          let puntosBase = minutesInVoice * config.ajustes.puntosporVoz;
           
-          // Inicializar datos del usuario si no existen
+          const member = newState.member;
+          if (isUserVIP(member)) {
+            puntosBase = puntosBase * config.ajustes.multiplicadorVIP;
+          }
+          
           if (!data.puntos[userId]) data.puntos[userId] = 0;
           if (!data.niveles[userId]) data.niveles[userId] = 0;
           
-          // Dar puntos
-          data.puntos[userId] += puntosGanados;
+          data.puntos[userId] += puntosBase;
           saveData();
           
-          console.log(`💰 ${username} ganó ${puntosGanados} puntos por ${minutesInVoice} minutos en voz`);
+          console.log(`💰 ${username} ganó ${puntosBase} puntos por ${minutesInVoice} minutos en voz`);
           
-          // Verificar subida de nivel
           const oldLevel = data.niveles[userId];
           const newLevel = getLevel(data.puntos[userId]);
           
@@ -1144,13 +1188,11 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
             data.niveles[userId] = newLevel;
             saveData();
             
-            // Intentar encontrar un canal para notificar el nivel
             const guild = newState.guild;
             if (guild) {
-              // Buscar un canal general para notificar
               const generalChannel = guild.channels.cache.find(ch => 
                 ch.type === 0 && (ch.name.includes('general') || ch.name.includes('chat'))
-              ) || guild.channels.cache.find(ch => ch.type === 0); // Cualquier canal de texto
+              ) || guild.channels.cache.find(ch => ch.type === 0);
               
               if (generalChannel) {
                 const embed = new EmbedBuilder()
@@ -1159,14 +1201,13 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
                   .setDescription(`🎉 <@${userId}> ha subido al **Nivel ${newLevel}** por su actividad en canales de voz!`)
                   .addFields(
                     { name: "⏰ Tiempo en voz", value: `${minutesInVoice} minutos`, inline: true },
-                    { name: "💰 Puntos ganados", value: `${puntosGanados}`, inline: true }
+                    { name: "💰 Puntos ganados", value: `${puntosBase}`, inline: true }
                   )
                   .setTimestamp();
                 
                 try {
                   await generalChannel.send({ embeds: [embed] });
                   
-                  // Verificar roles por nivel
                   const member = await guild.members.fetch(userId).catch(() => null);
                   if (member) {
                     for (let lvl in config.levelRoles) {
@@ -1174,13 +1215,11 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
                         let roleId = config.levelRoles[lvl];
                         let role = guild.roles.cache.get(roleId);
                         if (role) {
-                          // Remover roles de niveles anteriores
                           for (let oldRoleId of Object.values(config.levelRoles)) {
                             if (member.roles.cache.has(oldRoleId) && oldRoleId !== roleId) {
                               await member.roles.remove(oldRoleId).catch(() => {});
                             }
                           }
-                          // Agregar nuevo rol
                           if (!member.roles.cache.has(roleId)) {
                             await member.roles.add(roleId).catch(() => {});
                             generalChannel.send(
@@ -1199,15 +1238,12 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
           }
         }
         
-        // Limpiar seguimiento
         delete voiceTracking[userId];
       }
     }
     
-    // Usuario CAMBIA de canal de voz (actualizar el tracking)
     else if (oldState.channel && newState.channel && oldState.channel.id !== newState.channel.id) {
       if (voiceTracking[userId]) {
-        // Mantener el tiempo de inicio, solo actualizar el canal
         voiceTracking[userId].channelName = newState.channel.name;
         console.log(`🔄 ${username} se movió a: ${newState.channel.name}`);
       }
@@ -1218,13 +1254,104 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
   }
 });
 
-// Evento cuando el bot se conecta - mostrar usuarios ya en voz
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  if (!config.ajustes.rolVIP) return;
+  
+  const hadVIP = oldMember.roles.cache.has(config.ajustes.rolVIP);
+  const hasVIP = newMember.roles.cache.has(config.ajustes.rolVIP);
+  
+  if (!hadVIP && hasVIP) {
+    const userId = newMember.id;
+    const ahora = Date.now();
+    
+    if (!data.puntos[userId]) data.puntos[userId] = 0;
+    if (!data.niveles[userId]) data.niveles[userId] = 0;
+    
+    data.puntos[userId] += 2000;
+    vipTracking.vipUsers[userId] = ahora;
+    
+    saveData();
+    saveVipTracking();
+    
+    console.log(`👑 VIP otorgado a ${newMember.user.username} (+2000 puntos)`);
+    
+    try {
+      const guild = newMember.guild;
+      const generalChannel = guild.channels.cache.find(ch => 
+        ch.type === 0 && (ch.name.includes('general') || ch.name.includes('chat'))
+      ) || guild.channels.cache.find(ch => ch.type === 0);
+      
+      if (generalChannel) {
+        const embed = new EmbedBuilder()
+          .setColor("#FFD700")
+          .setTitle("👑 ¡Nuevo VIP!")
+          .setDescription(`¡<@${userId}> ahora es VIP!`)
+          .addFields(
+            { name: "🎁 Bonus de bienvenida", value: "2000 puntos", inline: true },
+            { name: "💎 Beneficios VIP", value: `${config.ajustes.multiplicadorVIP}x más puntos`, inline: true },
+            { name: "⏰ Duración", value: "30 días", inline: true }
+          )
+          .setTimestamp();
+        
+        await generalChannel.send({ embeds: [embed] });
+      }
+    } catch (error) {
+      console.log(`❌ Error al notificar VIP: ${error.message}`);
+    }
+  }
+});
+
+async function checkExpiredVIPs() {
+  if (!config.ajustes.rolVIP) return;
+  
+  const ahora = Date.now();
+  const unMes = 30 * 24 * 60 * 60 * 1000;
+  
+  for (const userId in vipTracking.vipUsers) {
+    const fechaVIP = vipTracking.vipUsers[userId];
+    const tiempoTranscurrido = ahora - fechaVIP;
+    
+    if (tiempoTranscurrido >= unMes) {
+      try {
+        for (const guild of client.guilds.cache.values()) {
+          const member = await guild.members.fetch(userId).catch(() => null);
+          if (member && member.roles.cache.has(config.ajustes.rolVIP)) {
+            await member.roles.remove(config.ajustes.rolVIP);
+            
+            delete vipTracking.vipUsers[userId];
+            saveVipTracking();
+            
+            console.log(`👑 VIP expirado removido de ${member.user.username}`);
+            
+            const generalChannel = guild.channels.cache.find(ch => 
+              ch.type === 0 && (ch.name.includes('general') || ch.name.includes('chat'))
+            ) || guild.channels.cache.find(ch => ch.type === 0);
+            
+            if (generalChannel) {
+              const embed = new EmbedBuilder()
+                .setColor("#FF6B6B")
+                .setTitle("👑 VIP Expirado")
+                .setDescription(`El VIP de <@${userId}> ha expirado después de 30 días.`)
+                .setTimestamp();
+              
+              await generalChannel.send({ embeds: [embed] });
+            }
+          }
+        }
+      } catch (error) {
+        console.log(`❌ Error al remover VIP expirado: ${error.message}`);
+      }
+    }
+  }
+}
+
 client.on("ready", () => {
   console.log(`🤖 Bot conectado como ${client.user.tag}`);
   console.log(`🌐 Servidor HTTP disponible en puerto ${PORT}`);
   console.log(`💰 Sistema de puntos: ${config.ajustes.puntosporMensaje} por mensaje, ${config.ajustes.puntosporVoz} por minuto de voz`);
+  console.log(`👑 Rol VIP configurado: ${config.ajustes.rolVIP ? 'Sí' : 'No'} (Multiplicador: ${config.ajustes.multiplicadorVIP}x)`);
+  console.log(`🎁 Claim diario: ${config.ajustes.puntosClaimDiario} puntos cada 24h`);
   
-  // Inicializar tracking para usuarios ya conectados a voz
   client.guilds.cache.forEach(guild => {
     guild.voiceStates.cache.forEach(voiceState => {
       if (voiceState.channel && !voiceState.member.user.bot) {
@@ -1237,6 +1364,9 @@ client.on("ready", () => {
       }
     });
   });
+  
+  setInterval(checkExpiredVIPs, 60 * 60 * 1000);
+  console.log(`⏰ Sistema de expiración VIP iniciado (revisa cada hora)`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
